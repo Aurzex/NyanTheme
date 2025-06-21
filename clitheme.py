@@ -41,23 +41,17 @@ class ReplacementRule:
 
 
 def load_config(file_path: Path) -> dict[str, Any]:
-	"""加载并验证JSON配置文件"""
-	try:
-		with file_path.open(encoding="utf-8") as f:
-			config = json.load(f)
-
-		if not isinstance(config, dict):
-			msg = "配置文件格式错误: 根元素必须是字典"
-			raise ValueError(msg)  # noqa: TRY004, TRY301
-		if "replacements" not in config:
-			msg = "配置文件中缺少 'replacements' 部分"
-			raise ValueError(msg)  # noqa: TRY301
-
-	except Exception as e:
-		print(f"加载配置文件时出错: {e}", file=sys.stderr)
-		sys.exit(1)
-	else:
-		return config
+    """加载并验证JSON配置文件"""
+    try:
+        with file_path.open(encoding="utf-8") as f:
+            config = json.load(f)
+        if not isinstance(config, dict):
+            raise ValueError("配置文件格式错误: 根元素必须是字典")
+    except Exception as e:
+        print(f"加载配置文件时出错: {e}", file=sys.stderr)
+        sys.exit(1)
+    else:
+        return config
 
 
 def compile_replacements(replacements: list[dict[str, Any]]) -> list[ReplacementRule]:
@@ -67,7 +61,7 @@ def compile_replacements(replacements: list[dict[str, Any]]) -> list[Replacement
 		pattern_str = rule.get("pattern")
 		replacement = rule.get("replacement")
 		locale = rule.get("locale", "default")
-		commands = rule.get("filter_commands"， [])
+		commands = rule.get("filter_commands", [])
 
 		if not pattern_str or not replacement:
 			print("警告: 规则缺少必要字段 'pattern' 或 'replacement'", file=sys.stderr)
@@ -198,43 +192,79 @@ def execute_command(
 
 
 def main() -> None:
-	parser = argparse.ArgumentParser(
-		description="命令行输出文本替换工具",
-		epilog="示例:\n  clitheme.py -apply config.json -- python3 script.py\n  clitheme.py -apply config.json python3 script.py",
-		formatter_class=argparse.RawTextHelpFormatter,
-	)
-	parser.add_argument("-apply", dest="config_file", required=True, help="包含替换规则的JSON配置文件")
-	parser.add_argument("--locale", default="default", help="指定使用的语言环境(默认为 'default')")
-	parser.add_argument("command", nargs=argparse.REMAINDER, help="要执行的命令及其参数")
+    parser = argparse.ArgumentParser(
+        description="命令行输出文本替换工具",
+        epilog="示例:\n  clitheme.py -apply config.json -- python3 script.py\n  clitheme.py -apply config.json python3 script.py",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument("-apply", dest="config_file", required=True, help="包含替换规则的JSON配置文件")
+    parser.add_argument("--locale", default="default", help="指定使用的语言环境(默认为 'default')")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="要执行的命令及其参数")
 
-	args = parser.parse_args()
+    if len(sys.argv) == 1:
+        parser.print_help()
+        print("\n示例: python clitheme.py -apply theme.json -- python3 -i", file=sys.stderr)
+        sys.exit(1)
 
-	# 处理命令参数
-	command = args.command
-	if command and command[0] == "--":
-		command = command[1:]
-	if not command:
-		print("错误: 必须指定要执行的命令", file=sys.stderr)
-		print("使用示例:", file=sys.stderr)
-		print("  clitheme.py -apply config.json -- python3 your_script.py", file=sys.stderr)
-		print("  clitheme.py -apply config.json python3 your_script.py", file=sys.stderr)
-		sys.exit(1)
+    args = parser.parse_args()
 
-	# 加载配置
-	config_path = Path(args.config_file)
-	if not config_path.exists():
-		print(f"错误: 配置文件不存在 '{args.config_file}'", file=sys.stderr)
-		sys.exit(1)
+    # 处理命令参数
+    command = args.command
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("错误: 必须指定要执行的命令", file=sys.stderr)
+        print("示例: python clitheme.py -apply theme.json -- python3 -i", file=sys.stderr)
+        sys.exit(1)
 
-	config = load_config(config_path)
-	replacements = compile_replacements(config["replacements"])
+    # 加载配置
+    config_path = Path(args.config_file)
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在 '{args.config_file}'", file=sys.stderr)
+        sys.exit(1)
 
-	# 执行命令
-	return_code = execute_command(command, replacements, args.locale)
-	sys.exit(return_code)
+    config = load_config(config_path)
+    replacements = []
+    if "replacements" in config and isinstance(config["replacements"], list):
+        replacements = compile_replacements(config["replacements"])
 
+    # 如果没有替换规则，直接代理命令
+    if not replacements:
+        proc = subprocess.Popen(command)
+        proc.wait()
+        sys.exit(proc.returncode)
+
+    # 否则执行带替换的命令
+    return_code = execute_command(command, replacements, args.locale)
+    sys.exit(return_code)
 
 if __name__ == "__main__":
-	main()
-# python Aumiao-py/clitheme/clitheme.py -apply Aumiao-py/clitheme/theme.json -- python3 Aumiao-py/main.py
-# python Aumiao-py/clitheme/clitheme.py -apply Aumiao-py/clitheme/theme.json -- python3 -i
+    main()
+# python clitheme.py -apply theme.json -- python3 main.py
+# python clitheme.py -apply theme.json -- python3 -i
+
+
+
+def demo_main():
+	# 找到 "--" 的分隔符
+	if "--" in sys.argv:
+		idx = sys.argv.index("--")
+		theme_args = sys.argv[1:idx]  # 主题相关参数
+		cmd = sys.argv[idx+1:]        # 要执行的命令
+	else:
+		theme_args = sys.argv[1:]
+		cmd = []
+
+	# 这里可以处理 theme_args，比如解析 -apply theme.json
+	# 这里只是演示,直接打印
+	print(f"应用主题参数: {theme_args}")
+
+	# 如果有命令,代理执行
+	if cmd:
+		# 直接将当前stdin/stdout/stderr传递给子进程
+		proc = subprocess.Popen(cmd)
+		proc.wait()
+
+# 如果需要演示用例,请取消下方注释
+# if __name__ == "__main__":
+#     demo_main()
