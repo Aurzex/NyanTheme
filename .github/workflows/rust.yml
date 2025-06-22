@@ -1,0 +1,75 @@
+name: Windows Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Get package metadata
+      id: package
+      shell: bash
+      run: |
+        name=$(grep '^name' Cargo.toml | cut -d '"' -f2)
+        version=$(grep '^version' Cargo.toml | cut -d '"' -f2)
+        echo "name=${name//-/_}" >> $GITHUB_OUTPUT
+        echo "version=$version" >> $GITHUB_OUTPUT
+      
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        components: rust-src, clippy, rustfmt
+        
+    - name: Build release binary
+      run: cargo build --verbose --release
+      
+    - name: Run tests
+      run: cargo test --verbose
+      
+    - name: Create release directory
+      run: mkdir release
+      
+    - name: Copy binary to release directory
+      run: Copy-Item "target/release/${{ steps.package.outputs.name }}.exe" -Destination release/
+      
+    - name: Install 7-Zip
+      run: choco install 7zip -y
+      
+    - name: Create release archives
+      run: |
+        $projectName = "${{ steps.package.outputs.name }}".Replace('_', '-')
+        cd release
+        7z a "$projectName-windows-x64-${{ steps.package.outputs.version }}.7z" "${{ steps.package.outputs.name }}.exe"
+        7z a "$projectName-windows-x64-${{ steps.package.outputs.version }}.zip" "${{ steps.package.outputs.name }}.exe"
+      
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-release
+        path: release/*.7z
+        retention-days: 5
+        
+    - name: Create GitHub Release
+      if: ${{ github.event_name == 'release' }}
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*.7z
+          release/*.zip
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
