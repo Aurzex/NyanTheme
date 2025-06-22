@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::{
     ffi::OsString,
     path::PathBuf,
-    process::{Stdio},
+    process::{Command, Stdio},
     sync::Arc,
 };
 use tokio::{
@@ -53,7 +53,7 @@ fn default_locale() -> String {
 }
 
 /// 编译后的替换规则
-#[derive(Clone)]
+#[derive(Clone)] // 实现 Clone trait
 struct ReplacementRule {
     pattern: Regex,
     replacement: String,
@@ -79,8 +79,18 @@ fn load_config(path: &PathBuf) -> Result<Vec<ReplacementRule>> {
     let data = std::fs::read_to_string(path)
         .with_context(|| format!("无法读取配置文件: {}", path.display()))?;
 
-    let configs: Vec<ReplacementConfig> = serde_json::from_str(&data)
-        .with_context(|| "配置文件格式错误: 根元素必须是数组".to_string())?;
+    let config: serde_json::Value = serde_json::from_str(&data)
+        .with_context(|| "配置文件格式错误: 必须是有效的JSON".to_string())?;
+
+    // 检查根元素是否是字典
+    let replacements = config
+        .get("replacements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("配置文件格式错误: 根元素必须是字典且包含'replacements'数组"))?;
+
+    let configs: Vec<ReplacementConfig> = serde_json::from_value(
+        serde_json::Value::Array(replacements.clone())
+    )?;
 
     let mut rules = Vec::new();
     for config in configs {
@@ -100,7 +110,7 @@ fn apply_replacements(
     locale: &str,
 ) -> String {
     let command_name = command_name.to_lowercase();
-    let mut result = text.to_string();
+    let mut result = text.to_string(); // 保留 mut 是必要的
 
     for rule in rules {
         if !rule.commands.is_empty() && !rule.commands.contains(&command_name) {
@@ -119,7 +129,7 @@ async fn process_stream<R, W>(
     reader: R,
     mut writer: W,
     command_name: &str,
-    rules: &[ReplacementRule],
+    rules: Arc<Vec<ReplacementRule>>,
     locale: &str,
 ) -> Result<()>
 where
@@ -128,7 +138,7 @@ where
 {
     let mut lines = reader.lines();
     while let Some(line) = lines.next_line().await? {
-        let processed = apply_replacements(&line, command_name, rules, locale);
+        let processed = apply_replacements(&line, command_name, &rules, locale);
         writer.write_all(processed.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
@@ -189,14 +199,14 @@ async fn execute_command(
 
     // 共享规则引用
     let rules_arc = Arc::new(rules.to_vec());
-    let locale_arc = Arc::new(locale.to_string());
-    let command_name_arc = Arc::new(command_name);
+    let locale_arc = locale.to_string();
+    let command_name_arc = command_name;
 
     // 处理标准输出
     let stdout_handle = {
         let rules = Arc::clone(&rules_arc);
-        let locale = Arc::clone(&locale_arc);
-        let command_name = Arc::clone(&command_name_arc);
+        let locale = locale_arc.clone();
+        let command_name = command_name_arc.clone();
         task::spawn(async move {
             let reader = AsyncBufReader::new(stdout);
             let writer = tokio::io::stdout();
@@ -204,7 +214,7 @@ async fn execute_command(
                 reader,
                 writer,
                 &command_name,
-                &rules,
+                rules,
                 &locale,
             )
             .await
@@ -214,8 +224,8 @@ async fn execute_command(
     // 处理标准错误
     let stderr_handle = {
         let rules = Arc::clone(&rules_arc);
-        let locale = Arc::clone(&locale_arc);
-        let command_name = Arc::clone(&command_name_arc);
+        let locale = locale_arc.clone();
+        let command_name = command_name_arc.clone();
         task::spawn(async move {
             let reader = AsyncBufReader::new(stderr);
             let writer = tokio::io::stderr();
@@ -223,7 +233,7 @@ async fn execute_command(
                 reader,
                 writer,
                 &command_name,
-                &rules,
+                rules,
                 &locale,
             )
             .await
@@ -283,6 +293,14 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
+
+    // 如果没有替换规则，直接执行命令
+    if rules.is_empty() {
+        let status = Command::new(&command[0])
+            .args(&command[1..])
+            .status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 
     // 执行命令
     match execute_command(&command, &rules, &args.locale).await {
